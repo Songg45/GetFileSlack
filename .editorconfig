@@ -1,0 +1,10 @@
+﻿[*.cs]
+
+# IDE0059: Unnecessary assignment of a value
+dotnet_diagnostic.IDE0059.severity = none
+
+# IDE0018: Inline variable declaration
+dotnet_diagnostic.IDE0018.severity = none
+
+# IDE0044: Add readonly modifier
+dotnet_diagnostic.IDE0044.severity = none

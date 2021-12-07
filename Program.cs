@@ -1,6 +1,4 @@
-﻿// For Directory.GetFiles and Directory.GetDirectories
-// For File.Exists, Directory.Exists
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -10,18 +8,14 @@ public class RecursiveFileProcessor
 
     [DllImport("kernel32.dll")]
     static extern uint GetCompressedFileSizeW([In, MarshalAs(UnmanagedType.LPWStr)] string lpFileName,
-    [Out, MarshalAs(UnmanagedType.U4)] out uint lpFileSizeHigh);
+       [Out, MarshalAs(UnmanagedType.U4)] out uint lpFileSizeHigh);
 
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("kernel32.dll", SetLastError = true, PreserveSig = true)]
+    static extern int GetDiskFreeSpaceW([In, MarshalAs(UnmanagedType.LPWStr)] string lpRootPathName,
+       out uint lpSectorsPerCluster, out uint lpBytesPerSector, out uint lpNumberOfFreeClusters,
+       out uint lpTotalNumberOfClusters);
 
-    static extern bool GetDiskFreeSpace(string lpDirectoryName,
-    out ulong lpSectorsPerCluster,
-    out ulong lpBytesPerSector,
-    out ulong lpNumberOfFreeClusters,
-    out ulong lpTotalNumberOfClusters);
-
-    static object ConsoleLock = new object();
+    static object ConsoleLock = new();
 
     public static void Main()
     {
@@ -32,8 +26,11 @@ public class RecursiveFileProcessor
 
         if (Directory.Exists(FolderPath))
         {
+            string BasePath = FolderPath.Substring(0, 3);
+            string OutputDirectoryPath = BasePath + "\\FileSlackLog";
+            _ = Directory.CreateDirectory(OutputDirectoryPath);
 
-            TestDirectory(FolderPath);
+            StartTraversingDirectories(FolderPath, OutputDirectoryPath);
 
         }
         else
@@ -45,21 +42,29 @@ public class RecursiveFileProcessor
 
     }
 
-    private static void TestDirectory(string TargetDirectory)
+    private static void StartTraversingDirectories(string TargetDirectory, string OutputDirectoryPath)
     {
-        DirectoryInfo directoryInfo = new DirectoryInfo(TargetDirectory);
+
+        int NumberOfThreads = 0;
+
+        DirectoryInfo directoryInfo = new(TargetDirectory);
         DirectoryInfo[] directoryInfoArray = directoryInfo.GetDirectories();
 
         foreach (DirectoryInfo directories in directoryInfoArray)
         {
             string ThreadDirectory = directories.FullName;
-            Thread WorkerThreadSubDirectories = new Thread(BeginThread);
+            Thread WorkerThreadSubDirectories = new(BeginThread);
             WorkerThreadSubDirectories.Start(ThreadDirectory);
+
+            NumberOfThreads++;
 
         }
 
-        Thread WorkerThreadMainDirectory = new Thread(BeginThread);
+        Thread WorkerThreadMainDirectory = new(BeginThread);
         WorkerThreadMainDirectory.Start(TargetDirectory);
+        NumberOfThreads++;
+
+        WriteMetaDataFile(OutputDirectoryPath);
 
     }
 
@@ -71,8 +76,8 @@ public class RecursiveFileProcessor
         DateTime EndingTime;
         TimeSpan TimeTaken;
 
-        ulong SectorsPerCluster = 0;
-        ulong BytesPerSector = 0;
+        uint SectorsPerCluster = 0;
+        uint BytesPerSector = 0;
 
         long TotalSizeOfFiles = 0;
         long TotalFileSlack = 0;
@@ -83,28 +88,32 @@ public class RecursiveFileProcessor
         string targetDirectory = (string)ThreadDirectory;
         string BasePath = targetDirectory.Substring(0, 3);
 
-        _ = GetDiskFreeSpace(BasePath, out SectorsPerCluster, out BytesPerSector, out _, out _);
+        _ = GetDiskFreeSpaceW(BasePath, out SectorsPerCluster, out BytesPerSector, out _, out _);
 
         DateTime BeginningTime = DateTime.Now;
 
-        ProcessDirectory(targetDirectory, BytesPerSector, SectorsPerCluster, ref TotalSizeOfFiles, ref TotalFileSlack, ref TotalNumberOfFiles, ref TotalNTFSCompressedFiles);
+        ProcessDirectory(targetDirectory, BytesPerSector, SectorsPerCluster, ref TotalSizeOfFiles, ref TotalFileSlack, ref TotalNumberOfFiles, 
+                         ref TotalNTFSCompressedFiles);
 
         EndingTime = DateTime.Now;
         TimeTaken = EndingTime.Subtract(BeginningTime);
 
-        lock(ConsoleLock)
+        lock (ConsoleLock)
         {
 
-            Console.WriteLine(Environment.NewLine, "-----", Environment.NewLine);
+            Console.WriteLine(Environment.NewLine + "-----------------------------------------------" + Environment.NewLine);
 
-            Console.WriteLine("Time began: " + BeginningTime);
-            Console.WriteLine("Time ended: " + EndingTime);
-            Console.WriteLine("Time taken: " + TimeTaken);
+            Console.WriteLine("Time began - " + BeginningTime);
+            Console.WriteLine("Time ended - " + EndingTime);
+            Console.WriteLine("Time taken - " + TimeTaken);
 
-            Console.WriteLine("Total Size of files in directory {0} is: {1}", targetDirectory, TotalSizeOfFiles);
-            Console.WriteLine("Total file slack of files in directory {0} is: {1}", targetDirectory, TotalFileSlack);
-            Console.WriteLine("Total NTFS Compressed Files in directory {0} is: {1}", targetDirectory, TotalNTFSCompressedFiles);
-            Console.WriteLine("Total number of files scanned in directory {0} is: {1}", targetDirectory, TotalNumberOfFiles);
+            Console.WriteLine("Total Size of files in directory {0} is - {1}", targetDirectory, TotalSizeOfFiles);
+            Console.WriteLine("Total file slack of files in directory {0} is - {1}", targetDirectory, TotalFileSlack);
+            Console.WriteLine("Total NTFS Compressed Files in directory {0} is - {1}", targetDirectory, TotalNTFSCompressedFiles);
+            Console.WriteLine("Total number of files scanned in directory {0} is - {1}", targetDirectory, TotalNumberOfFiles);
+
+            WriteToFile(BasePath, targetDirectory, BeginningTime, EndingTime, TimeTaken, TotalSizeOfFiles, TotalFileSlack, 
+                        TotalNTFSCompressedFiles, TotalNumberOfFiles);
 
         }
 
@@ -112,7 +121,8 @@ public class RecursiveFileProcessor
 
     // Process all files in the directory passed in, recurse on any directories 
     // that are found, and process the files they contain.
-    public static void ProcessDirectory(string targetDirectory, ulong BytesPerSector, ulong SectorsPerCluster, ref long TotalSizeOfFiles, ref long TotalFileSlack, ref ulong TotalNumberOfFiles, ref ulong TotalNTFSCompressedFiles)
+    public static void ProcessDirectory(string targetDirectory, ulong BytesPerSector, ulong SectorsPerCluster, ref long TotalSizeOfFiles, 
+                                        ref long TotalFileSlack, ref ulong TotalNumberOfFiles, ref ulong TotalNTFSCompressedFiles)
     {
 
         // Process the list of files found in the directory.
@@ -123,7 +133,8 @@ public class RecursiveFileProcessor
             string[] fileEntries = Directory.GetFiles(targetDirectory);
 
             foreach (string fileName in fileEntries)
-                ProcessFile(fileName, BytesPerSector, SectorsPerCluster, ref TotalSizeOfFiles, ref TotalFileSlack, ref TotalNumberOfFiles, ref TotalNTFSCompressedFiles);
+                ProcessFile(fileName, BytesPerSector, SectorsPerCluster, ref TotalSizeOfFiles, ref TotalFileSlack, ref TotalNumberOfFiles, 
+                            ref TotalNTFSCompressedFiles);
 
             if (targetDirectory.Length > 4)
             {
@@ -131,7 +142,8 @@ public class RecursiveFileProcessor
                 // Recurse into subdirectories of this directory.
                 string[] subdirectoryEntries = Directory.GetDirectories(targetDirectory);
                 foreach (string subdirectory in subdirectoryEntries)
-                    ProcessDirectory(subdirectory, BytesPerSector, SectorsPerCluster, ref TotalSizeOfFiles, ref TotalFileSlack, ref TotalNumberOfFiles, ref TotalNTFSCompressedFiles);
+                    ProcessDirectory(subdirectory, BytesPerSector, SectorsPerCluster, ref TotalSizeOfFiles, ref TotalFileSlack, 
+                                    ref TotalNumberOfFiles, ref TotalNTFSCompressedFiles);
 
             }
 
@@ -146,7 +158,8 @@ public class RecursiveFileProcessor
 
     }
 
-    public static void ProcessFile(string path, ulong BytesPerSector, ulong SectorsPerCluster, ref long TotalSizeOfFiles, ref long TotalFileSlack, ref ulong TotalNumberOfFiles, ref ulong TotalNTFSCompressedFiles)
+    public static void ProcessFile(string path, ulong BytesPerSector, ulong SectorsPerCluster, ref long TotalSizeOfFiles, 
+                                    ref long TotalFileSlack, ref ulong TotalNumberOfFiles, ref ulong TotalNTFSCompressedFiles)
     {
         TotalNumberOfFiles++;
 
@@ -155,7 +168,7 @@ public class RecursiveFileProcessor
         long FileSize = 0;
         long FileSlack = 0;
         long FileSizeOnDisk = 0;
-        long size = 0;
+        uint size = 0;
         uint hosize = 0;
         FileInfo FileNameInfo;
 
@@ -167,7 +180,7 @@ public class RecursiveFileProcessor
 
         ClusterSize = (uint)(SectorsPerCluster * BytesPerSector);
         losize = GetCompressedFileSizeW(path, out hosize);
-        size = (long)hosize << 32 | losize;
+        size = hosize << 32 | losize;
         FileSizeOnDisk = ((size + ClusterSize - 1) / ClusterSize) * ClusterSize;
 
         if (FileSizeOnDisk > FileSize)
@@ -187,6 +200,61 @@ public class RecursiveFileProcessor
         TotalFileSlack += Convert.ToInt64(FileSlack);
 
         //ClearCurrentConsoleLine();
+
+    }
+
+    private static void WriteToFile(string BasePath, string targetDirectory, DateTime BeginningTime, 
+                                    DateTime EndingTime, TimeSpan TimeTaken, long TotalSizeOfFiles, long TotalFileSlack, 
+                                    ulong TotalNTFSCompressedFiles, ulong TotalNumberOfFiles)
+    {
+
+        string OutputDirectoryPath = BasePath + "\\FileSlackLog";
+        string FilePath = OutputDirectoryPath + "\\" + Thread.CurrentThread.ManagedThreadId + ".txt";
+
+        if (File.Exists(FilePath))
+        {
+
+            File.Delete(FilePath);
+
+        }
+
+        FileStream OutputtoFile = new(FilePath, FileMode.Create);
+
+        StreamWriter Writer = new(OutputtoFile);
+
+        Writer.WriteLine("0- Directory Path - " + targetDirectory);
+        Writer.WriteLine("1- Time began - " + BeginningTime);
+        Writer.WriteLine("2- Time ended - " + EndingTime);
+        Writer.WriteLine("3- Time taken - " + TimeTaken);
+
+        Writer.WriteLine("4- Total Size of files in directory {0} is - {1}", targetDirectory, TotalSizeOfFiles);
+        Writer.WriteLine("5- Total file slack of files in directory {0} is - {1}", targetDirectory, TotalFileSlack);
+        Writer.WriteLine("6- Total NTFS Compressed Files in directory {0} is - {1}", targetDirectory, TotalNTFSCompressedFiles);
+        Writer.WriteLine("7- Total number of files scanned in directory {0} is - {1}", targetDirectory, TotalNumberOfFiles);
+
+        Writer.Flush();
+        Writer.Close();
+
+    }
+
+    private static void WriteMetaDataFile(string OutputDirectoryPath)
+    {
+
+        string OutputPath = OutputDirectoryPath + "//metadata.txt";
+
+        if (File.Exists(OutputPath))
+        {
+
+            File.Delete(OutputPath);
+
+        }
+
+        FileStream OutputtoFile = new(OutputPath, FileMode.Create);
+
+        StreamWriter Writer = new(OutputtoFile);
+        Writer.WriteLine("GetFileSlack");
+        Writer.Flush();
+        Writer.Close();
 
     }
 
